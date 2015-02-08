@@ -1,0 +1,154 @@
+Practical Machine Learning - Prediction Assignment Writeup
+==========================================================
+
+###Rahul Tomar
+
+###February 7, 2015
+
+###Introduction
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har) (see the section on the Weight Lifting Exercise Dataset).
+
+###Getting and Preparing the data
+First we load the training and testing data sets. In order to avoid numerical variables being erroneously converted to factor variables it is necessary to convert all `NA` and `#DIV/0!` values explicitly to NAs:
+```{r echo=TRUE, warning=FALSE, message=FALSE, comment=""}
+trainingData <- read.csv('pml-training.csv', na.strings=c("NA","", "#DIV/0!"))
+testingData <- read.csv('pml-testing.csv', na.strings=c("NA","", "#DIV/0!"))
+summary(trainingData$classe)
+```
+
+Second, examining the dataset, it is apparent that the different values of `classe` are grouped in sequential order so a model could appear to do very well just classifying based on the index. Therefore it is important to remove the id column, x, and any other column which could be used to place the values is sequential order such as timestamps. Also the names of the people who supplied the data are also grouped in sequential order so they need to be removed as well:
+```{r echo=TRUE, warning=FALSE, message=FALSE, comment=""}
+drops <- c ("user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "X", "new_window")
+trainingData.k <- trainingData[,!(names(trainingData) %in% drops)]
+testingData.k <- testingData[,!(names(testingData) %in% drops)]
+```
+
+Third, examining the dataset it is apparent that some columns has a lot of missing values, so we calculate how many missing values each column has and remove any columns that have too many missing values:
+```{r echo=TRUE, warning=FALSE, message=FALSE, comment=""}
+trainingDataLength <- dim(trainingData.k)[2]
+naCols <- vector(length=trainingDataLength)
+for (i in 1:trainingDataLength) { naCols[i] <- sum(is.na(trainingData.k[,i]))}
+trainingData.s <- trainingData.k[,which(naCols < 10)]
+testingData.s <- testingData.k[,which(naCols < 10)]
+```
+
+Fourth, we subdivide the training set to create a cross validation set. We allocate 70% of the original training set to the new training set, and the other 30% to the cross validation set:
+```{r echo=TRUE, warning=FALSE, message=FALSE, comment=""}
+library(caret)
+inTrainingData <- createDataPartition(y=trainingData.s$classe, p=0.7, list=FALSE)
+newTrainingData <- trainingData.s[inTrainingData,]
+trainingData.cv <- trainingData.s[-inTrainingData,]
+```
+
+###Modeling and Error estimation
+Let's start by investigation by using classification and regression trees as proposed by [Classification and Regression Trees (The Wadsworth Statistics/Probability Series)](http://www.amazon.com/Classification-Regression-Wadsworth-Statistics-Probability/dp/0534980546) and [Ripley, B. D. (1996), Pattern Recognition and Neural Networks., Cambridge University Press, Cambridge. Chapter 7](http://www.amazon.com/Pattern-Recognition-Neural-Networks-Ripley/dp/0521717701/ref=sr_1_1?ie=UTF8&qid=1423393533&sr=8-1&keywords=Pattern+Recognition+and+Neural+Networks) :
+
+```{r echo=TRUE, warning=FALSE, message=FALSE, comment=""}
+library(tree)
+firstFit <- tree(classe ~ ., method="tree", data=newTrainingData)
+firstPrediction <- predict(firstFit, type="class")
+table(newTrainingData$classe, firstPrediction)
+firstFit.prune <- prune.misclass(firstFit, best=10)
+```
+
+Figure 1 shows a pruned version of the generated tree in order to make the diagram legible. The full tree has 22 nodes so it is rather complex.
+```{r echo=TRUE, warning=FALSE, message=FALSE, comment="", fig.path="Fig/"}
+plot(firstFit.prune)
+title(main="Figure 1: Tree created using tree function")
+text(firstFit.prune, cex=0.6)
+```
+
+Let's now estimate the in-sample error:
+```{r echo=TRUE, warning=FALSE, message=FALSE, comment=""}
+nright <- table(firstPrediction == newTrainingData$classe)
+treeInError <- as.vector(100 * (1 - nright["TRUE"] / sum(nright)))
+```
+
+We estimate the in-sample error to be `r treeInError`%. Next, how does the tree perform on cross-validation set?
+```{r echo=TRUE, warning=FALSE, message=FALSE, comment=""}
+secondPrediction <- predict(firstFit, newdata = trainingData.cv, type="class")
+table(trainingData.cv$classe, secondPrediction)
+nright <- table(secondPrediction == trainingData.cv$classe)
+treeOutError = as.vector(100 * (1 - nright["TRUE"] / sum(nright)))
+```
+
+We estimate the out-of-sample error to be `r treeOutError`%. Let's try to improve the performance on cross-validation set by pruning.
+```{r echo=TRUE, warning=FALSE, message=FALSE, comment="", fig.path="Fig/"}
+error.cv <- {Inf}
+for (i in 2:19) {
+    prune.data <- prune.misclass(firstFit, best=i)
+    pred.cv <- predict(prune.data, newdata=trainingData.cv, type="class")
+    nright = table(pred.cv == trainingData.cv$classe)
+    error = as.vector(100 * ( 1- nright["TRUE"] / sum(nright)))
+    error.cv <- c(error.cv, error) 
+}
+error.cv
+plot(error.cv, type = "l", xlab="Size of tree (number of nodes)", ylab="Out of sample error(%)", main = "Figure 2: Relationship between tree size and out of sample error")
+```
+
+Despite the complexity of the tree in Figure 1, Figure 2 does not indicate overfitting as the out of sample error does not increase as more nodes are added to the tree.
+
+Now let's use a different type of classification and regression tree implementated by RPart:
+```{r echo=TRUE, warning=FALSE, message=FALSE, comment="", fig.path="Fig/"}
+library(rpart)
+secondFit <- rpart(classe ~ ., data=newTrainingData)
+thirdPrediction <- predict(secondFit, type="class")
+table(newTrainingData$classe, thirdPrediction)
+library(rpart.plot)
+prp(secondFit, cex=0.6, type=1)
+```
+
+Looking at the trees in Figure 1 and Figure 3 although the diagrams are different because they come from different packages there are similarities in the decisions they are using.
+```{r echo=TRUE, warning=FALSE, message=FALSE, comment="", fig.path="Fig/"}
+cp <- secondFit$cp
+plot(cp[, 2], cp[, 3], type = "l", xlab = "Size of tree (number of nodes", ylab = "Out of sample error (%)", 
+    main = "Figure 4: Relationship between tree size and out of sample error")
+```
+
+Now we will be going to estimate the in-sample error again:
+```{r echo=TRUE, warning=FALSE, message=FALSE, comment=""}
+nright <- table(thirdPrediction == newTrainingData$classe)
+rpartInError = as.vector(100 * (1 - nright["TRUE"]/sum(nright)))
+```
+We estimate the out-of-sample error to be `r rpartInError`%. Again this is an improvement on`tree`.
+
+Now we will apply the random forest also proposed by [Breiman, L. (2001), Random Forests, Machine Learning 45(1), 5-32](http://oz.berkeley.edu/~breiman/randomforest2001.pdf)
+```{r echo=TRUE, warning=FALSE, message=FALSE, comment=""}
+library(randomForest)
+thirdFit <- randomForest(classe ~ ., data = newTrainingData, method = "class")
+fifthPrediction <- predict(thirdFit, type = "class")
+table(newTrainingData$classe, fifthPrediction)
+```
+
+```{r echo=TRUE, warning=FALSE, message=FALSE, comment=""}
+nright <- table(fifthPrediction == newTrainingData$classe)
+forestInError = as.vector(100 * (1 - nright["TRUE"]/sum(nright)))
+```
+
+The in-sample error for the random forest is `r forestInError`%. This is a big improvement over the two previous tree based methods.
+```{r echo=TRUE, warning=FALSE, message=FALSE, comment=""}
+sixthPrediction <- predict(thirdFit, newdata = trainingData.cv, type = "class")
+table(trainingData.cv$classe, sixthPrediction)
+```
+
+```{r echo=TRUE, warning=FALSE, message=FALSE, comment=""}
+nright <- table(sixthPrediction == trainingData.cv$classe)
+forestOutError = as.vector(100 * (1 - nright["TRUE"]/sum(nright)))
+```
+
+The out-of-sample error for the random forest is `r forestOutError`%. Again this is much better than the previous tree based methods.
+
+###Results
+The random forest clearly performs better, approaching 99% accuracy for in-sample and out-of-sample error so I will select this model and apply it to the test data set.
+```{r echo=TRUE, warning=FALSE, message=FALSE, comment=""}
+pmlWriteFiles = function(x) {
+    n <- length(x)
+    for (i in 1:n) {
+        filename = paste0("problem_id_", i, ".txt")
+        write.table(x[i], file = filename, quote = FALSE, row.names = FALSE, 
+            col.names = FALSE)
+    }
+}
+seventhPrediction <- predict(thirdFit, newdata = testingData.s, type = "class")
+pmlWriteFiles(seventhPrediction)
+```
